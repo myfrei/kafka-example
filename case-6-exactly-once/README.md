@@ -16,7 +16,20 @@
 1. **Idempotent Producer** (`enable.idempotence=true`) — дедупликация на уровне broker
 2. **Transactional Producer** (`transactional.id`) — атомарная отправка пачки сообщений
 3. **Isolated Consumer** (`isolation.level=read_committed`) — видит только закоммиченные транзакции
-4. **Idempotent Consumer** (дедупликация по messageId в PostgreSQL) — защита от дублей на стороне консьюмера
+4. **Idempotent Consumer** (дедупликация по messageId в PostgreSQL) — защита от дублей
+
+**Что в этой версии сделано реалистичнее:**
+- Заказ публикуется типизированными `OrderMessage` (ORDER_HEADER → ORDER_ITEM* → ORDER_FOOTER)
+- Консьюмер пишет дедуп-запись (`processed_messages`) и бизнес-данные (`orders`) в одной
+  транзакции БД; `FailureSimulator` (~15%) откатывает транзакцию — проверяется идемпотентность
+- Добавлен **shipping-service** — downstream-потребитель с `read_committed`,
+  отгружает заказы только из закоммиченных транзакций
+
+**Топология:**
+```
+Producer (tx) → [exactly-once-topic] ─┬─→ exactly-once-group → Consumer → PostgreSQL (дедуп + orders)
+                                      └─→ shipping-group     → shipping-service (отгрузка)
+```
 
 ---
 
@@ -30,6 +43,12 @@ docker logs -f case6-producer &
 docker logs -f case6-consumer &
 ```
 
+| Сервис | Порт |
+|---|---|
+| case6-producer | 8089 |
+| case6-consumer | 8095 |
+| case6-shipping-service | 8096 |
+
 ---
 
 ## Сценарий проверки
@@ -39,18 +58,13 @@ docker logs -f case6-consumer &
 ```bash
 curl -X POST http://localhost:8089/api/orders \
   -H "Content-Type: application/json" \
-  -d '{
-    "orderId": "order-001",
-    "items": ["apple", "banana", "cherry"]
-  }'
+  -d '{"orderId": "order-001", "items": ["apple", "banana", "cherry"]}'
 ```
+Консьюмер получит 5 сообщений (header + 3 items + footer) атомарно.
 
-В консьюмере появятся 5 сообщений (header + 3 items + footer) атомарно:
-```
-[consumer] Received: messageId=exactly-once-topic:0:0 key=order-001
-[consumer] Business logic: {"type":"ORDER_HEADER", "orderId":"order-001", ...}
-[consumer] Received: messageId=exactly-once-topic:0:1 key=order-001-item-0
-...
+```bash
+curl http://localhost:8095/api/processed     # обработанные сообщения и заказы
+curl http://localhost:8096/api/shipments     # отгрузка
 ```
 
 ### Шаг 2: Откат транзакции
@@ -60,72 +74,49 @@ curl -X POST http://localhost:8089/api/orders/fail \
   -H "Content-Type: application/json" \
   -d '{"orderId": "order-fail"}'
 ```
-
-Ожидаемое поведение:
-- Продюсер отправил 2 сообщения
-- Бросил исключение → транзакция откатилась
-- Консьюмер с `read_committed` НЕ увидел ни одного из этих сообщений
-
+Продюсер отправил 2 сообщения и бросил исключение → транзакция откатилась.
+Консьюмер с `read_committed` НЕ увидел их:
 ```bash
-# Проверяем — в таблице нет этих сообщений
 docker exec -it postgres psql -U kafka_user -d kafka_demo \
-  -c "SELECT * FROM processed_messages WHERE payload LIKE '%WILL_ROLLBACK%';"
-# → 0 rows
+  -c "SELECT COUNT(*) FROM orders WHERE order_id = 'order-fail';"
+# → 0
 ```
 
-### Шаг 3: Проверка идемпотентности (защита от дублей)
+### Шаг 3: Проверка идемпотентности
 
 ```bash
-# Симулируем получение того же сообщения дважды
-# (в реальности это происходит при rebalancing)
-# Смотрим в таблице — один и тот же messageId обработан только раз:
 docker exec -it postgres psql -U kafka_user -d kafka_demo \
   -c "SELECT message_id, COUNT(*) FROM processed_messages GROUP BY message_id HAVING COUNT(*) > 1;"
-# → 0 rows (нет дублей!)
+# → 0 rows (нет дублей, даже при сбоях и повторной доставке)
 ```
 
-### Шаг 4: Проверить в Kafka UI
+### Шаг 4: Kafka UI
 
-- Topics → exactly-once-topic → Messages
-- Обратить внимание: видны только закоммиченные транзакции
-- Consumer Groups → exactly-once-group — нет lag
+http://localhost:8080 → Topics → `exactly-once-topic` — видны только закоммиченные транзакции.
+
+---
+
+## Тесты
+
+```bash
+cd case-6-exactly-once/consumer
+mvn test
+```
+
+`IdempotentConsumerIntegrationTest` поднимает Embedded Kafka + H2: коммитит два
+заказа и откатывает один, проверяя, что в БД попали ровно сообщения закоммиченных
+транзакций (8 записей), а откатившийся заказ невидим.
 
 ---
 
 ## Конфигурация: ключевые различия
 
 ```yaml
-# Обычный продюсер
-acks: 1
-enable.idempotence: false
-
-# Идемпотентный продюсер (защита от дублей при retry)
-acks: all
-enable.idempotence: true
-max.in.flight.requests.per.connection: 5
-
 # Транзакционный продюсер (атомарность)
-transactional.id: my-app-tx
+transactional.id: case6-tx-*
 enable.idempotence: true   # обязательно при транзакциях
+acks: all
 
 # Консьюмер: только закоммиченные транзакции
 isolation.level: read_committed
-```
-
----
-
-## Таблица дедупликации в PostgreSQL
-
-```sql
--- Посмотреть все обработанные сообщения
-SELECT message_id, topic, partition_id, offset_value, LEFT(payload, 50), processed_at
-FROM processed_messages
-ORDER BY processed_at DESC
-LIMIT 20;
-
--- Проверить наличие дублей
-SELECT message_id, COUNT(*)
-FROM processed_messages
-GROUP BY message_id
-HAVING COUNT(*) > 1;
 ```

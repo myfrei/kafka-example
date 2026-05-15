@@ -424,9 +424,27 @@ services:
         condition: service_healthy
       postgres:
         condition: service_healthy
+    ports:
+      - "8095:8080"
     environment:
       KAFKA_BOOTSTRAP_SERVERS: kafka:9093
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/kafka_demo
       SPRING_DATASOURCE_USERNAME: kafka_user
       SPRING_DATASOURCE_PASSWORD: kafka_pass
+      # 15% сообщений падают — транзакция БД откатывается, проверяется идемпотентность
+      APP_CHAOS_FAILURE_RATE: "0.15"
+    profiles: ["case6"]
+
+  # Downstream-сервис: отгружает заказы из закоммиченных транзакций (read_committed)
+  case6-shipping-service:
+    build: ./case-6-exactly-once/shipping-service
+    container_name: case6-shipping-service
+    networks: [kafka-net]
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8096:8080"
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9093
     profiles: ["case6"]

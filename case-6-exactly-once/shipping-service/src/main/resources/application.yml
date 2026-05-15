@@ -1,0 +1,20 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: case6-shipping-service
+
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    consumer:
+      group-id: shipping-group
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      properties:
+        # Видим только закоммиченные транзакции
+        isolation.level: read_committed
+        spring.json.use.type.headers: false
+        spring.json.value.default.type: com.kafka.demo.case6.shipping.model.OrderMessage
+        spring.json.trusted.packages: "com.kafka.demo.*"
