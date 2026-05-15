@@ -296,6 +296,7 @@ services:
     environment:
       KAFKA_BOOTSTRAP_SERVERS: kafka:9093
       INSTANCE_ID: "instance-1"
+      APP_CHAOS_FAILURE_RATE: "0.1"
     profiles: ["case4"]
 
   case4-service-2:
@@ -308,6 +309,7 @@ services:
     environment:
       KAFKA_BOOTSTRAP_SERVERS: kafka:9093
       INSTANCE_ID: "instance-2"
+      APP_CHAOS_FAILURE_RATE: "0.1"
     profiles: ["case4"]
 
   case4-service-3:
@@ -320,6 +322,21 @@ services:
     environment:
       KAFKA_BOOTSTRAP_SERVERS: kafka:9093
       INSTANCE_ID: "instance-3"
+      APP_CHAOS_FAILURE_RATE: "0.1"
+    profiles: ["case4"]
+
+  # Один инстанс в своей группе — видит ВСЕ партиции, строит общую агрегацию
+  case4-aggregator-service:
+    build: ./case-4-partitions/aggregator-service
+    container_name: case4-aggregator-service
+    networks: [kafka-net]
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8091:8080"
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9093
     profiles: ["case4"]
 
   # ---------------------------------------------------------------------------
