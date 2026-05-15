@@ -3,18 +3,14 @@ server:
 
 spring:
   application:
-    name: case3-batch-consumer
+    name: case3-producer
 
   kafka:
     bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
-    # Продюсер сводок batch-summary (consumer-фабрика настроена в BatchKafkaConfig)
     producer:
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
       value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
       properties:
         spring.json.add.type.headers: false
-
-app:
-  chaos:
-    # Доля батчей, падающих с ошибкой (0.0..1.0)
-    failure-rate: ${APP_CHAOS_FAILURE_RATE:0.0}
+        # Чуть больше батчинг на стороне продюсера — реалистичнее для нагрузочного flood
+        linger.ms: 20

@@ -251,6 +251,22 @@ services:
         condition: service_healthy
     environment:
       KAFKA_BOOTSTRAP_SERVERS: kafka:9093
+      # 15% батчей падают целиком — видно at-least-once на уровне батча
+      APP_CHAOS_FAILURE_RATE: "0.15"
+    profiles: ["case3"]
+
+  # Downstream-сервис: агрегирует сводки батчей (топик batch-summary) в отчёт
+  case3-reporting-service:
+    build: ./case-3-batch/reporting-service
+    container_name: case3-reporting-service
+    networks: [kafka-net]
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8090:8080"
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9093
     profiles: ["case3"]
 
   # ---------------------------------------------------------------------------
