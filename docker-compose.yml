@@ -145,6 +145,8 @@ services:
     environment:
       KAFKA_BOOTSTRAP_SERVERS: kafka:9093
       CONSUMER_INSTANCE_ID: "consumer-1"
+      # 20% сообщений упадут с transient-ошибкой — видно retry в логах
+      APP_CHAOS_FAILURE_RATE: "0.2"
     profiles: ["case1"]
 
   case1-consumer-2:
@@ -157,6 +159,21 @@ services:
     environment:
       KAFKA_BOOTSTRAP_SERVERS: kafka:9093
       CONSUMER_INSTANCE_ID: "consumer-2"
+      APP_CHAOS_FAILURE_RATE: "0.2"
+    profiles: ["case1"]
+
+  # Отдельный потребитель в своей consumer group — агрегирует выручку по регионам
+  case1-analytics-service:
+    build: ./case-1-consumer-failover/analytics-service
+    container_name: case1-analytics-service
+    networks: [kafka-net]
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8086:8080"
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9093
     profiles: ["case1"]
 
   # ---------------------------------------------------------------------------
