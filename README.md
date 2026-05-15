@@ -1,6 +1,8 @@
 # Kafka Training Project — Java Microservices
 
-Учебный проект для изучения Apache Kafka с Spring Boot. Каждый кейс — отдельный runnable пример с полным описанием и способами проверки.
+Учебный проект для изучения Apache Kafka с Spring Boot. Каждый кейс — отдельный
+runnable пример одного концепта Kafka, с типизированной доменной моделью,
+инъекцией случайных сбоев и интеграционными тестами.
 
 ## Технологии
 
@@ -9,89 +11,69 @@
 - **PostgreSQL 16** (Cases 2, 6)
 - **Kafka UI** (Provectus) — визуальный мониторинг
 - **Docker Compose** — весь стек одной командой
+- **Embedded Kafka + H2** — интеграционные тесты без Docker
 
 ---
 
 ## Структура проекта
 
+Каждый кейс состоит из независимых Maven-модулей (общего родительского pom нет).
+Помимо producer/consumer в каждый кейс добавлен отдельный downstream-сервис.
+
 ```
 kafka-example/
 ├── docker-compose.yml              ← Весь стек: Kafka + ZooKeeper + UI + PostgreSQL
-├── init-db.sql                     ← Инициализация схемы БД
+├── init-db.sql                     ← Схема БД (kafka_offsets, case2_processed_orders,
+│                                     processed_messages, orders)
 │
-├── case-1-consumer-failover/       ← 2 Producer + 2 Consumer, ребалансировка
-│   ├── producer/                   ← Spring Boot Producer (порт 8081/8082)
-│   ├── consumer/                   ← Spring Boot Consumer с ConsumerSeekAware
-│   └── README.md                   ← Описание + шаги проверки
+├── case-1-consumer-failover/       ← Ребалансировка consumer group
+│   ├── producer/                   ← (порт 8081/8082)
+│   ├── consumer/                   ← ConsumerSeekAware + retry, 2 инстанса
+│   └── analytics-service/          ← (порт 8086) выручка по регионам
 │
-├── case-2-manual-offset/           ← Ручные оффсеты + хранение в PostgreSQL
+├── case-2-manual-offset/           ← Ручные оффсеты в PostgreSQL
 │   ├── producer/                   ← (порт 8083)
-│   ├── consumer/                   ← ManualAck + ConsumerSeekAware + JPA
-│   └── README.md
+│   ├── consumer/                   ← manual ack, order+offset атомарно
+│   └── audit-service/              ← (порт 8087) журнал аудита
 │
-├── case-3-batch/                   ← Батч-чтение + ручной коммит оффсета
+├── case-3-batch/                   ← Батч-чтение
 │   ├── producer/                   ← (порт 8084)
 │   ├── consumer/                   ← BatchListener, max.poll.records=50
-│   └── README.md
+│   └── reporting-service/          ← (порт 8090) отчёт по сводкам батчей
 │
-├── case-4-partitions/              ← 3 партиции × 3 инстанса сервиса
+├── case-4-partitions/              ← 3 партиции × 3 инстанса
 │   ├── producer/                   ← (порт 8085)
-│   ├── service/                    ← Деплоится 3 раза (instance-1,2,3)
-│   └── README.md
+│   ├── service/                    ← 3 инстанса (instance-1,2,3)
+│   └── aggregator-service/         ← (порт 8091) агрегация по всем партициям
 │
 ├── case-5-dlq/                     ← Dead Letter Queue
 │   ├── producer/                   ← (порт 8088)
-│   ├── consumer/                   ← Retry 3x → DLQ
-│   ├── dlq-handler/                ← Обработчик DLQ
-│   └── README.md
+│   ├── consumer/                   ← (порт 8092) DefaultErrorHandler + DLQ
+│   ├── dlq-handler/                ← (порт 8093) разбор DLQ
+│   └── alerting-service/           ← (порт 8094) алерты по DLQ
 │
 └── case-6-exactly-once/            ← Exactly-Once Semantics
-    ├── producer/                   ← Transactional Producer (порт 8089)
-    ├── consumer/                   ← Idempotent Consumer + PostgreSQL
-    └── README.md
+    ├── producer/                   ← (порт 8089) транзакционный продюсер
+    ├── consumer/                   ← (порт 8095) идемпотентный консьюмер + PostgreSQL
+    └── shipping-service/           ← (порт 8096) отгрузка (read_committed)
 ```
+
+Подробные сценарии проверки — в `README.md` каждого кейса.
 
 ---
 
 ## Быстрый старт
 
-### 1. Поднять инфраструктуру
-
 ```bash
-# Запустить только инфраструктуру (Kafka, ZooKeeper, UI, PostgreSQL)
+# 1. Поднять инфраструктуру
 docker-compose up -d zookeeper kafka kafka-ui postgres
+docker-compose ps                       # подождать ~30с
+# Kafka UI: http://localhost:8080
 
-# Подождать ~30 секунд, проверить что всё поднялось
-docker-compose ps
-
-# Kafka UI доступен: http://localhost:8080
-```
-
-### 2. Запустить нужный кейс
-
-```bash
-# Case 1: Consumer Failover
+# 2. Запустить нужный кейс (профили case1..case6)
 docker-compose --profile case1 up -d
 
-# Case 2: Manual Offset + PostgreSQL
-docker-compose --profile case2 up -d
-
-# Case 3: Batch Processing
-docker-compose --profile case3 up -d
-
-# Case 4: 3 Partitions × 3 Instances
-docker-compose --profile case4 up -d
-
-# Case 5: Dead Letter Queue
-docker-compose --profile case5 up -d
-
-# Case 6: Exactly-Once
-docker-compose --profile case6 up -d
-```
-
-### 3. Остановить кейс
-
-```bash
+# 3. Остановить кейс
 docker-compose --profile case1 down
 ```
 
@@ -99,159 +81,42 @@ docker-compose --profile case1 down
 
 ## Кейсы
 
-### Case 1 — Consumer Failover
-**Что демонстрирует:** ребалансировка при падении консьюмера
+| Кейс | Концепт | Ключевой механизм | Доп. сервис |
+|---|---|---|---|
+| 1 — Consumer Failover | Ребалансировка группы | `ConsumerSeekAware`, `session.timeout.ms`, retry | analytics-service |
+| 2 — Manual Offset | Оффсеты в PostgreSQL, replay | manual ack, order+offset в одной транзакции | audit-service |
+| 3 — Batch Processing | Чтение батчами | `setBatchListener(true)`, `max.poll.records` | reporting-service |
+| 4 — Partitions | Параллельное чтение | 3 партиции × 3 инстанса, ключевое распределение | aggregator-service |
+| 5 — Dead Letter Queue | Обработка ошибок | `DefaultErrorHandler` + `DeadLetterPublishingRecoverer` | alerting-service |
+| 6 — Exactly-Once | Транзакции + идемпотентность | `transactional.id`, `read_committed`, дедуп в БД | shipping-service |
 
-**Сценарий:**
-```bash
-# Смотрим логи консьюмеров
-docker logs -f case1-consumer-1 &
-docker logs -f case1-consumer-2 &
+### Что общего у всех кейсов
 
-# "Убиваем" один консьюмер
-docker stop case1-consumer-2
-
-# Наблюдаем: consumer-1 берёт ВСЕ партиции
-# Возвращаем
-docker start case1-consumer-2
-# Наблюдаем: снова rebalancing, партиции делятся
-```
-
-**Ключевые параметры:**
-- `session.timeout.ms=10000` — через 10с без heartbeat считается мёртвым
-- `heartbeat.interval.ms=3000` — как часто шлёт heartbeat
-- `group-id=order-group` — все инстансы в одной группе
+- **Типизированная модель** — сообщения это Java-records (`OrderEvent`, `ActivityEvent`,
+  `OrderMessage`, ...), сериализация через `JsonSerializer`/`JsonDeserializer`.
+- **Инъекция сбоев** — `FailureSimulator` роняет часть сообщений с вероятностью
+  `APP_CHAOS_FAILURE_RATE` (в docker-compose 0.1–0.25). Каждый кейс показывает
+  свой путь восстановления: retry, replay, DLQ, откат транзакции.
+- **Доп. сервис** — отдельная consumer group, демонстрирующая независимое
+  потребление того же топика.
 
 ---
 
-### Case 2 — Manual Offset + PostgreSQL
-**Что демонстрирует:** хранение оффсетов в БД, replay сообщений
+## Тесты
 
-**Сценарий:**
+В основном consumer-модуле каждого кейса есть интеграционный тест на Embedded Kafka
+(Docker не нужен). Кейсы 2 и 6 используют H2 in-memory вместо PostgreSQL.
+
 ```bash
-# Отправить сообщения
-curl -X POST http://localhost:8083/api/orders \
-  -H "Content-Type: application/json" \
-  -d '{"key": "k1", "message": "test"}'
-
-# Посмотреть оффсеты в БД
-curl http://localhost:8083/api/offsets
-
-# Сдвинуть оффсет на -1 (replay с начала)
-curl -X POST http://localhost:8083/api/offsets/seek \
-  -H "Content-Type: application/json" \
-  -d '{"partition": 0, "offset": -1}'
-
-# Перезапустить — консьюмер начнёт читать с начала
-docker restart case2-consumer
+cd case-1-consumer-failover/consumer && mvn test
+cd case-2-manual-offset/consumer     && mvn test
+cd case-3-batch/consumer             && mvn test
+cd case-4-partitions/service         && mvn test
+cd case-5-dlq/consumer               && mvn test
+cd case-6-exactly-once/consumer      && mvn test
 ```
 
-**Напрямую в PostgreSQL:**
-```sql
--- Посмотреть оффсеты
-SELECT * FROM kafka_offsets;
-
--- Ручной сдвиг (replay)
-UPDATE kafka_offsets SET offset_value = 0 WHERE topic = 'manual-offset-topic';
-```
-
----
-
-### Case 3 — Batch Processing
-**Что демонстрирует:** чтение батчами, bulk-insert, коммит после батча
-
-**Сценарий:**
-```bash
-# Загрузить 100 сообщений
-for i in {1..100}; do
-  curl -s -X POST http://localhost:8084/api/messages \
-    -H "Content-Type: application/json" \
-    -d '{"key":"k'$i'","message":"msg '$i'"}' &
-done; wait
-
-# Наблюдать в логах: батчи по 50 сообщений
-docker logs -f case3-batch-consumer
-```
-
-**Ожидаемый вывод:**
-```
-=== BATCH RECEIVED: 50 messages ===
-  Partition 0: 17 records, offsets [0 - 16]
-  Partition 1: 18 records, offsets [0 - 17]
-  After deduplication: 50 unique keys
-=== BATCH COMMITTED: 50 messages processed ===
-```
-
----
-
-### Case 4 — 3 Partitions × 3 Instances
-**Что демонстрирует:** параллельное чтение, роль ключа, распределение партиций
-
-**Сценарий:**
-```bash
-# Отправить 30 сообщений с разными ключами
-curl "http://localhost:8085/api/messages/flood?count=30"
-
-# В логах видно: каждый инстанс читает только свою партицию
-docker logs case4-service-1  # → только partition-0
-docker logs case4-service-2  # → только partition-1
-docker logs case4-service-3  # → только partition-2
-
-# Принудительно в partition-2
-curl -X POST http://localhost:8085/api/messages/partition/2 \
-  -H "Content-Type: application/json" \
-  -d '{"key":"forced","value":"test"}'
-# → прочитает ТОЛЬКО instance-3
-
-# Остановить instance-2
-docker stop case4-service-2
-# → instance-1 или 3 возьмёт partition-1 (rebalancing)
-```
-
----
-
-### Case 5 — Dead Letter Queue
-**Что демонстрирует:** обработка ошибок, retry, DLQ-паттерн
-
-**Сценарий:**
-```bash
-# Успешное сообщение
-curl -X POST http://localhost:8088/api/orders \
-  -H "Content-Type: application/json" \
-  -d '{"key":"ok","message":"{\"orderId\":\"1\"}"}'
-
-# Сообщение, которое уйдёт в DLQ (3 попытки, потом DLQ)
-curl -X POST http://localhost:8088/api/orders \
-  -H "Content-Type: application/json" \
-  -d '{"key":"fail","message":"{\"fail\":true}"}'
-
-# Наблюдаем в логах dlq-handler:
-docker logs -f case5-dlq-handler
-
-# В Kafka UI: Topics → orders.DLQ
-```
-
----
-
-### Case 6 — Exactly-Once Semantics
-**Что демонстрирует:** транзакционный продюсер, идемпотентный консьюмер
-
-**Сценарий:**
-```bash
-# Транзакционная отправка (header + items + footer атомарно)
-curl -X POST http://localhost:8089/api/orders \
-  -H "Content-Type: application/json" \
-  -d '{"orderId":"ord-1","items":["apple","banana"]}'
-
-# Откат транзакции (консьюмер НЕ увидит эти сообщения)
-curl -X POST http://localhost:8089/api/orders/fail \
-  -H "Content-Type: application/json" \
-  -d '{"orderId":"ord-fail"}'
-
-# Проверить в PostgreSQL — нет мусора от откатившейся транзакции
-docker exec -it postgres psql -U kafka_user -d kafka_demo \
-  -c "SELECT message_id, LEFT(payload,40) FROM processed_messages ORDER BY processed_at DESC LIMIT 10;"
-```
+В Docker-образах тесты пропускаются (`-DskipTests`) — запускайте их отдельно через `mvn test`.
 
 ---
 
@@ -263,85 +128,39 @@ docker exec -it postgres psql -U kafka_user -d kafka_demo \
 # Список топиков
 docker exec kafka kafka-topics --bootstrap-server localhost:9093 --list
 
-# Создать топик с 3 партициями
-docker exec kafka kafka-topics \
-  --bootstrap-server localhost:9093 \
-  --create --topic my-topic --partitions 3 --replication-factor 1
-
 # Описание топика (партиции, leader, replicas)
-docker exec kafka kafka-topics \
-  --bootstrap-server localhost:9093 \
-  --describe --topic orders
+docker exec kafka kafka-topics --bootstrap-server localhost:9093 --describe --topic orders
 
-# Посмотреть consumer groups
-docker exec kafka kafka-consumer-groups \
-  --bootstrap-server localhost:9093 --list
-
-# Описание группы (lag, assigned partitions)
-docker exec kafka kafka-consumer-groups \
-  --bootstrap-server localhost:9093 \
-  --describe --group order-group
+# Consumer groups и их lag
+docker exec kafka kafka-consumer-groups --bootstrap-server localhost:9093 --list
+docker exec kafka kafka-consumer-groups --bootstrap-server localhost:9093 \
+  --describe --group order-processing-group
 
 # Сбросить оффсет группы на начало
-docker exec kafka kafka-consumer-groups \
-  --bootstrap-server localhost:9093 \
-  --group order-group \
-  --topic orders \
-  --reset-offsets --to-earliest --execute
-
-# Сбросить оффсет на конкретную позицию
-docker exec kafka kafka-consumer-groups \
-  --bootstrap-server localhost:9093 \
-  --group order-group \
-  --topic orders:0 \
-  --reset-offsets --to-offset 42 --execute
+docker exec kafka kafka-consumer-groups --bootstrap-server localhost:9093 \
+  --group order-processing-group --topic orders --reset-offsets --to-earliest --execute
 
 # Прочитать сообщения из топика
-docker exec kafka kafka-console-consumer \
-  --bootstrap-server localhost:9093 \
-  --topic orders \
-  --from-beginning \
-  --property print.key=true \
-  --property print.partition=true \
-  --property print.offset=true
-
-# Отправить тестовое сообщение из консоли
-docker exec -it kafka kafka-console-producer \
-  --bootstrap-server localhost:9093 \
-  --topic orders \
-  --property parse.key=true \
-  --property key.separator=:
-# Затем вводить: key:value
+docker exec kafka kafka-console-consumer --bootstrap-server localhost:9093 \
+  --topic orders --from-beginning --property print.key=true --property print.partition=true
 ```
 
 ### PostgreSQL
 
 ```bash
-# Подключиться к БД
 docker exec -it postgres psql -U kafka_user -d kafka_demo
-
-# Полезные запросы внутри psql:
-\dt                                    -- список таблиц
-SELECT * FROM kafka_offsets;           -- оффсеты (Case 2)
-SELECT * FROM processed_messages;      -- обработанные сообщения (Case 6)
-SELECT * FROM orders;                  -- бизнес-данные (Case 6)
+# \dt                                  -- список таблиц
+# SELECT * FROM kafka_offsets;          -- оффсеты (Case 2)
+# SELECT * FROM case2_processed_orders; -- обработанные заказы (Case 2)
+# SELECT * FROM processed_messages;     -- дедупликация (Case 6)
+# SELECT * FROM orders;                 -- бизнес-данные (Case 6)
 ```
 
 ### Мониторинг
 
 ```bash
-# Kafka UI
-open http://localhost:8080
-
-# Consumer lag всех групп
-docker exec kafka kafka-consumer-groups \
-  --bootstrap-server localhost:9093 --list | \
-  xargs -I{} docker exec kafka kafka-consumer-groups \
-  --bootstrap-server localhost:9093 --describe --group {}
-
-# Метрики сервисов (Spring Actuator)
-curl http://localhost:8081/actuator/health
-curl http://localhost:8081/actuator/metrics
+open http://localhost:8080             # Kafka UI
+curl http://localhost:8086/api/analytics   # пример: аналитика Case 1
 ```
 
 ---
@@ -351,15 +170,12 @@ curl http://localhost:8081/actuator/metrics
 | Концепция | Где смотреть | Ключевой параметр |
 |---|---|---|
 | Consumer Group | Case 1 | `group-id` |
-| Partition Assignment | Case 1, 4 | `ConsumerSeekAware.onPartitionsAssigned` |
-| Rebalancing | Case 1, 4 | `session.timeout.ms` |
-| Manual Commit | Case 2, 3 | `enable-auto-commit: false` |
+| Rebalancing | Case 1, 4 | `session.timeout.ms`, `ConsumerSeekAware` |
+| Manual Commit | Case 2, 3 | `enable-auto-commit: false`, `AckMode.MANUAL_IMMEDIATE` |
 | Offset Storage (DB) | Case 2 | `ConsumerSeekAware` + PostgreSQL |
 | Batch Processing | Case 3 | `setBatchListener(true)`, `max.poll.records` |
-| Parallel Partitions | Case 4 | `partitions=3`, 3 инстанса |
 | Key-based Routing | Case 4 | `murmur2(key) % partitions` |
 | DLQ Pattern | Case 5 | `DeadLetterPublishingRecoverer` |
-| Idempotent Producer | Case 6 | `enable.idempotence=true` |
-| Transactions | Case 6 | `transactional.id`, `@Transactional` |
-| Read Committed | Case 6 | `isolation.level=read_committed` |
-| Idempotent Consumer | Case 6 | Дедупликация по messageId в БД |
+| Idempotent / Transactional | Case 6 | `enable.idempotence`, `transactional.id`, `read_committed` |
+| Типизированная сериализация | Все | `JsonSerializer` / `JsonDeserializer` |
+| Обработка сбоев | Все | `FailureSimulator`, `DefaultErrorHandler` |
