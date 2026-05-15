@@ -1,75 +1,59 @@
 package com.kafka.demo.case5.dlq.listener;
 
-import lombok.extern.slf4j.Slf4j;
+import com.kafka.demo.case5.dlq.model.DlqRecord;
+import com.kafka.demo.case5.dlq.model.OrderEvent;
+import com.kafka.demo.case5.dlq.service.DlqService;
+import lombok.RequiredArgsConstructor;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
+import org.apache.kafka.common.header.Header;
 import org.springframework.kafka.annotation.KafkaListener;
+import org.springframework.kafka.support.KafkaHeaders;
 import org.springframework.stereotype.Component;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.concurrent.CopyOnWriteArrayList;
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
+import java.time.Instant;
 
 /**
- * DLQ Handler — обработчик Dead Letter Queue
+ * DLQ Handler — читает топик orders-dlq-demo.DLT.
  *
- * Читает сообщения из топика orders.DLQ и:
- * 1. Логирует для алертинга (в реальности → Slack/PagerDuty)
- * 2. Сохраняет в БД для ручного анализа
- * 3. Предоставляет REST API для просмотра и повторной обработки
- *
- * В реальных системах DLQ Handler может:
- * - Автоматически повторять обработку после исправления кода
- * - Отправлять алерты команде
- * - Предоставлять UI для операторов
- * - Группировать ошибки по типам
+ * DeadLetterPublishingRecoverer кладёт в заголовки сообщения метаданные сбоя:
+ * исходный топик/партицию/оффсет и текст исключения. Этот сервис достаёт их
+ * из заголовков и сохраняет полную запись о проблеме.
  */
-@Slf4j
 @Component
+@RequiredArgsConstructor
 public class DlqHandlerListener {
 
-    // Хранилище DLQ сообщений (в реальности — PostgreSQL)
-    private final List<DlqMessage> dlqMessages = new CopyOnWriteArrayList<>();
+    private final DlqService dlqService;
 
-    @KafkaListener(
-        topics = "orders.DLQ",
-        groupId = "dlq-handler-group"
-    )
-    public void handleDlqMessage(ConsumerRecord<String, String> record) {
-        DlqMessage dlqMessage = new DlqMessage(
-            record.key(),
-            record.value(),
-            record.partition(),
-            record.offset()
-        );
-        dlqMessages.add(dlqMessage);
-
-        // В реальной системе здесь:
-        // - alertService.sendSlackAlert(dlqMessage);
-        // - dlqRepository.save(dlqMessage);
-        // - metricsService.incrementDlqCounter(errorType);
-
-        log.error("""
-            ╔═══════════════════════════════════════════╗
-            ║  DLQ MESSAGE RECEIVED — REQUIRES ATTENTION
-            ╠═══════════════════════════════════════════╣
-            ║  Key:       {}
-            ║  Partition: {}
-            ║  Offset:    {}
-            ║  Value:     {}
-            ╚═══════════════════════════════════════════╝
-            """,
-            record.key(), record.partition(), record.offset(), record.value()
-        );
+    @KafkaListener(topics = "orders-dlq-demo.DLT", groupId = "dlq-handler-group")
+    public void handle(ConsumerRecord<String, OrderEvent> record) {
+        OrderEvent order = record.value();
+        dlqService.store(new DlqRecord(
+            order != null ? order.orderId() : record.key(),
+            order != null ? order.customerId() : null,
+            headerAsString(record, KafkaHeaders.DLT_ORIGINAL_TOPIC),
+            headerAsInt(record, KafkaHeaders.DLT_ORIGINAL_PARTITION),
+            headerAsLong(record, KafkaHeaders.DLT_ORIGINAL_OFFSET),
+            headerAsString(record, KafkaHeaders.DLT_EXCEPTION_FQCN),
+            headerAsString(record, KafkaHeaders.DLT_EXCEPTION_MESSAGE),
+            Instant.now()
+        ));
     }
 
-    public List<DlqMessage> getDlqMessages() {
-        return new ArrayList<>(dlqMessages);
+    private String headerAsString(ConsumerRecord<?, ?> record, String name) {
+        Header h = record.headers().lastHeader(name);
+        return h == null ? null : new String(h.value(), StandardCharsets.UTF_8);
     }
 
-    public record DlqMessage(
-        String key,
-        String value,
-        int partition,
-        long offset
-    ) {}
+    private Integer headerAsInt(ConsumerRecord<?, ?> record, String name) {
+        Header h = record.headers().lastHeader(name);
+        return h == null ? null : ByteBuffer.wrap(h.value()).getInt();
+    }
+
+    private Long headerAsLong(ConsumerRecord<?, ?> record, String name) {
+        Header h = record.headers().lastHeader(name);
+        return h == null ? null : ByteBuffer.wrap(h.value()).getLong();
+    }
 }

@@ -5,20 +5,25 @@
 Демонстрирует паттерн Dead Letter Queue для обработки сообщений, которые не удалось обработать.
 
 **Проблема без DLQ:**
-Если обработка сообщения упала → консьюмер застрял на этом оффсете → все последующие сообщения не читаются → блокировка всего топика.
+Если обработка сообщения упала и его повторять бесконечно — консьюмер застрянет
+на этом оффсете, и весь топик встанет.
 
-**Решение с DLQ:**
+**Решение с DLQ (через стандартные средства Spring Kafka):**
 ```
-[main-topic] → Consumer → (ошибка? retry 3x) ──fail──→ [main-topic.DLQ]
-                              ↓ success                        ↓
-                           next message               DLQ Handler (алерт/анализ)
+[orders-dlq-demo] → Consumer → DefaultErrorHandler (retry) ──fail──→ [orders-dlq-demo.DLT]
+                       ↓ success                                              ↓
+                   next message                              dlq-handler + alerting-service
 ```
 
-**Стратегии работы с DLQ:**
-1. **Ignore** — просто логировать и продолжать (потеря данных!)
-2. **Retry** — повторять N раз, потом в DLQ (используем здесь)
-3. **Circuit Breaker** — при превышении % ошибок прекратить обработку
-4. **Manual Review** — UI для операторов, ручное переигрывание
+**Что в этой версии сделано реалистичнее:**
+- Вместо ручного подсчёта retry — стандартные `DefaultErrorHandler` +
+  `DeadLetterPublishingRecoverer` (идиоматичный Spring Kafka)
+- Типизированный `OrderEvent`; два вида сбоев:
+  - **poison** (`PoisonMessageException`) — заказы покупателей `bad-*`, non-retryable, сразу в DLQ
+  - **transient** (`FailureSimulator`, ~20%) — повторяемые, часть выживает после retry
+- DLQ-топик читают **два независимых потребителя**:
+  - `dlq-handler` — сохраняет проблемные сообщения с метаданными сбоя для разбора
+  - `alerting-service` — считает алерты по типу ошибки (новый сервис)
 
 ---
 
@@ -32,83 +37,76 @@ docker logs -f case5-consumer &
 docker logs -f case5-dlq-handler &
 ```
 
+| Сервис | Порт |
+|---|---|
+| case5-producer | 8088 |
+| case5-consumer | 8092 |
+| case5-dlq-handler | 8093 |
+| case5-alerting-service | 8094 |
+
 ---
 
 ## Сценарий проверки
 
-### Шаг 1: Успешное сообщение
+### Шаг 1: Нормальные заказы
 
 ```bash
-curl -X POST http://localhost:8088/api/orders \
-  -H "Content-Type: application/json" \
-  -d '{"key": "order-ok", "message": "{\"orderId\": \"ok-1\", \"product\": \"apple\"}"}'
+curl -X POST "http://localhost:8088/api/orders/random?count=20"
+curl http://localhost:8092/api/processing-stats
 ```
 
-Лог consumer: `Successfully processed: key=order-ok`
-
-### Шаг 2: Сообщение с постоянной ошибкой (уйдёт в DLQ)
+### Шаг 2: «Ядовитые» заказы → DLQ
 
 ```bash
-curl -X POST http://localhost:8088/api/orders \
-  -H "Content-Type: application/json" \
-  -d '{"key": "fail-order", "message": "{\"orderId\": \"bad-1\", \"status\": \"fail\"}"}'
+curl -X POST "http://localhost:8088/api/orders/poison?count=3"
 ```
-
 Логи consumer:
 ```
-Processing failed (attempt 1/3): key=fail-order error=Simulated permanent failure
-Processing failed (attempt 2/3): key=fail-order error=Simulated permanent failure
-Processing failed (attempt 3/3): key=fail-order error=Simulated permanent failure
-Message sent to DLQ: key=fail-order topic=orders.DLQ
+Sending record to DLQ: topic=orders-dlq-demo partition=.. offset=.. cause=Poison order ...
 ```
-
-Лог dlq-handler:
+Логи dlq-handler:
 ```
 ╔═══════════════════════════════════════════╗
-║  DLQ MESSAGE RECEIVED — REQUIRES ATTENTION
-╠═══════════════════════════════════════════╣
-║  Key:       fail-order
-║  Value:     {"original": {...}, "error": "Simulated permanent failure", ...}
+║  DLQ MESSAGE — REQUIRES ATTENTION
+║  Order: ord-...   Customer: bad-customer
+║  Error: ...PoisonMessageException: Poison order ...
 ╚═══════════════════════════════════════════╝
 ```
 
-### Шаг 3: Проверить Kafka UI
-
-- **orders-dlq-demo** — основной топик (все сообщения)
-- **orders.DLQ** — только упавшие сообщения
-- Consumer Groups → dlq-consumer-group → lag = 0 (не застрял!)
-
-### Шаг 4: Replay из DLQ
-
-После исправления кода — перечитать сообщения из DLQ:
+### Шаг 3: Проверить DLQ и алерты
 
 ```bash
-# Переименовать DLQ-топик в основной (или написать отдельный сервис replay)
-docker exec kafka kafka-console-consumer \
-  --bootstrap-server localhost:9093 \
-  --topic orders.DLQ \
-  --from-beginning
+curl http://localhost:8093/api/dlq      # сохранённые проблемные сообщения
+curl http://localhost:8094/api/alerts   # счётчики алертов по типам ошибок
 ```
+
+### Шаг 4: Kafka UI
+
+http://localhost:8080 →
+- `orders-dlq-demo` — основной топик
+- `orders-dlq-demo.DLT` — только упавшие сообщения
+- Consumer Groups → `dlq-consumer-group` → lag = 0 (топик не застрял)
 
 ---
 
-## Spring Kafka встроенная поддержка DLQ
+## Тесты
 
-Spring Kafka предоставляет `DeadLetterPublishingRecoverer` — настраивается в конфигурации:
-
-```java
-@Bean
-public DefaultErrorHandler errorHandler(KafkaTemplate<?, ?> template) {
-    // Автоматически отправляет в topic.DLQ после N попыток
-    var recoverer = new DeadLetterPublishingRecoverer(template);
-    var backoff = new ExponentialBackOffWithMaxRetries(3);
-    backoff.setInitialInterval(1000);
-    backoff.setMultiplier(2.0);
-    return new DefaultErrorHandler(recoverer, backoff);
-}
+```bash
+cd case-5-dlq/consumer
+mvn test
 ```
 
-Это встроенное решение автоматически:
-- Добавляет заголовки с исходным топиком, партицией, оффсетом
-- Следует стратегии именования `{topic}.DLQ`
-- Реализует exponential backoff
+`DlqConsumerIntegrationTest` поднимает Embedded Kafka, отправляет нормальные и
+«ядовитый» заказ и проверяет, что poison-сообщение оказалось в `orders-dlq-demo.DLT`.
+
+---
+
+## Политика повторов
+
+| Тип ошибки | Поведение |
+|---|---|
+| `PoisonMessageException` | non-retryable — сразу в DLQ |
+| `TransientProcessingException` и прочие | 3 повтора (`FixedBackOff` 1с), затем DLQ |
+
+`DeadLetterPublishingRecoverer` автоматически добавляет в DLQ-сообщение заголовки:
+исходный топик/партиция/оффсет, класс и текст исключения (`KafkaHeaders.DLT_*`).
