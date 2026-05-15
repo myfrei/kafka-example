@@ -1,0 +1,25 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: case3-batch-consumer
+
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    consumer:
+      group-id: batch-consumer-group
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      enable-auto-commit: false   # Ручной коммит после всего батча
+      properties:
+        # Максимальное количество записей в одном poll() вызове
+        max.poll.records: 50
+        # Максимальное ожидание для набора батча (ms)
+        fetch.min.bytes: 1024
+        fetch.max.wait.ms: 500
+
+app:
+  batch:
+    size: 50

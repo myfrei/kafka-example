@@ -1,0 +1,24 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: case1-consumer
+
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    consumer:
+      group-id: order-group          # Все инстансы этого консьюмера — одна группа
+      auto-offset-reset: earliest    # При старте читать с начала (если нет сохранённого оффсета)
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      enable-auto-commit: true       # Авто-коммит для простоты демонстрации
+      auto-commit-interval: 1000     # Коммитим оффсет каждую секунду
+      # Таймаут heartbeat — через этот интервал Kafka поймёт, что консьюмер умер
+      properties:
+        heartbeat.interval.ms: 3000
+        session.timeout.ms: 10000
+        max.poll.interval.ms: 30000
+
+app:
+  consumer-instance-id: ${CONSUMER_INSTANCE_ID:consumer-1}

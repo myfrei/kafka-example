@@ -1,0 +1,23 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: case1-producer
+
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      # Гарантия доставки: acks=all означает что все реплики подтвердили запись
+      acks: all
+      retries: 3
+      properties:
+        enable.idempotence: false
+
+app:
+  kafka:
+    topic: orders
+    # Имя инстанса продюсера (переопределяется через env PRODUCER_ID)
+  producer-id: ${PRODUCER_ID:producer-1}

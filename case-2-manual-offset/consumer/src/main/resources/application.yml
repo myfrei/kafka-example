@@ -1,0 +1,30 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: case2-consumer
+
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/kafka_demo}
+    username: ${SPRING_DATASOURCE_USERNAME:kafka_user}
+    password: ${SPRING_DATASOURCE_PASSWORD:kafka_pass}
+    driver-class-name: org.postgresql.Driver
+
+  jpa:
+    hibernate:
+      ddl-auto: validate   # Схема создаётся через init-db.sql
+    show-sql: true
+
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    consumer:
+      group-id: manual-offset-group
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      # КЛЮЧЕВОЕ: отключаем автоматический коммит оффсета
+      enable-auto-commit: false
+      # assign.from.db=true означает, что мы сами управляем назначением оффсетов
+      properties:
+        isolation.level: read_committed

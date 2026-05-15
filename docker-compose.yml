@@ -1,0 +1,346 @@
+version: '3.9'
+
+# =============================================================================
+# Kafka Training Project — Docker Compose
+# =============================================================================
+# Включает: ZooKeeper, Kafka, Kafka UI, PostgreSQL
+# Каждый кейс запускается отдельно (см. README.md)
+# =============================================================================
+
+networks:
+  kafka-net:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  kafka_data:
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # INFRASTRUCTURE
+  # ---------------------------------------------------------------------------
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.0
+    container_name: zookeeper
+    networks: [kafka-net]
+    ports:
+      - "2181:2181"
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "2181"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  kafka:
+    image: confluentinc/cp-kafka:7.6.0
+    container_name: kafka
+    networks: [kafka-net]
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    ports:
+      - "9092:9092"
+      - "9093:9093"   # внутренний listener для контейнеров
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9093,PLAINTEXT_HOST://localhost:9092
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_DEFAULT_REPLICATION_FACTOR: 1
+      KAFKA_NUM_PARTITIONS: 3
+      KAFKA_LOG_RETENTION_HOURS: 24
+      KAFKA_LOG_SEGMENT_BYTES: 1073741824
+      # Для exactly-once
+      KAFKA_ENABLE_IDEMPOTENCE: "true"
+    healthcheck:
+      test: ["CMD", "kafka-topics", "--bootstrap-server", "localhost:9093", "--list"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+
+  # Kafka UI — удобный веб-интерфейс для мониторинга
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: kafka-ui
+    networks: [kafka-net]
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9093
+      KAFKA_CLUSTERS_0_ZOOKEEPER: zookeeper:2181
+
+  # PostgreSQL — для Case 2 (manual offset) и Case 6 (exactly-once)
+  postgres:
+    image: postgres:16-alpine
+    container_name: postgres
+    networks: [kafka-net]
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: kafka_demo
+      POSTGRES_USER: kafka_user
+      POSTGRES_PASSWORD: kafka_pass
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kafka_user -d kafka_demo"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # CASE 1: Consumer Failover (2 producers + 2 consumers)
+  # ---------------------------------------------------------------------------
+
+  case1-producer-1:
+    build: ./case-1-consumer-failover/producer
+    container_name: case1-producer-1
+    networks: [kafka-net]
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8081:8080"
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9093
+      PRODUCER_ID: "producer-1"
+    profiles: ["case1"]
+
+  case1-producer-2:
+    build: ./case-1-consumer-failover/producer
+    container_name: case1-producer-2
+    networks: [kafka-net]
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8082:8080"
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9093
+      PRODUCER_ID: "producer-2"
+    profiles: ["case1"]
+
+  case1-consumer-1:
+    build: ./case-1-consumer-failover/consumer
+    container_name: case1-consumer-1
+    networks: [kafka-net]
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9093
+      CONSUMER_INSTANCE_ID: "consumer-1"
+    profiles: ["case1"]
+
+  case1-consumer-2:
+    build: ./case-1-consumer-failover/consumer
+    container_name: case1-consumer-2
+    networks: [kafka-net]
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9093
+      CONSUMER_INSTANCE_ID: "consumer-2"
+    profiles: ["case1"]
+
+  # ---------------------------------------------------------------------------
+  # CASE 2: Manual Offset + PostgreSQL
+  # ---------------------------------------------------------------------------
+
+  case2-producer:
+    build: ./case-2-manual-offset/producer
+    container_name: case2-producer
+    networks: [kafka-net]
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8083:8080"
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9093
+    profiles: ["case2"]
+
+  case2-consumer:
+    build: ./case-2-manual-offset/consumer
+    container_name: case2-consumer
+    networks: [kafka-net]
+    depends_on:
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9093
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/kafka_demo
+      SPRING_DATASOURCE_USERNAME: kafka_user
+      SPRING_DATASOURCE_PASSWORD: kafka_pass
+    profiles: ["case2"]
+
+  # ---------------------------------------------------------------------------
+  # CASE 3: Batch Processing
+  # ---------------------------------------------------------------------------
+
+  case3-producer:
+    build: ./case-3-batch/producer
+    container_name: case3-producer
+    networks: [kafka-net]
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8084:8080"
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9093
+    profiles: ["case3"]
+
+  case3-batch-consumer:
+    build: ./case-3-batch/consumer
+    container_name: case3-batch-consumer
+    networks: [kafka-net]
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9093
+    profiles: ["case3"]
+
+  # ---------------------------------------------------------------------------
+  # CASE 4: 3 Partitions × 3 Instances
+  # ---------------------------------------------------------------------------
+
+  case4-producer:
+    build: ./case-4-partitions/producer
+    container_name: case4-producer
+    networks: [kafka-net]
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8085:8080"
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9093
+    profiles: ["case4"]
+
+  case4-service-1:
+    build: ./case-4-partitions/service
+    container_name: case4-service-1
+    networks: [kafka-net]
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9093
+      INSTANCE_ID: "instance-1"
+    profiles: ["case4"]
+
+  case4-service-2:
+    build: ./case-4-partitions/service
+    container_name: case4-service-2
+    networks: [kafka-net]
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9093
+      INSTANCE_ID: "instance-2"
+    profiles: ["case4"]
+
+  case4-service-3:
+    build: ./case-4-partitions/service
+    container_name: case4-service-3
+    networks: [kafka-net]
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9093
+      INSTANCE_ID: "instance-3"
+    profiles: ["case4"]
+
+  # ---------------------------------------------------------------------------
+  # CASE 5: Dead Letter Queue
+  # ---------------------------------------------------------------------------
+
+  case5-producer:
+    build: ./case-5-dlq/producer
+    container_name: case5-producer
+    networks: [kafka-net]
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8088:8080"
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9093
+    profiles: ["case5"]
+
+  case5-consumer:
+    build: ./case-5-dlq/consumer
+    container_name: case5-consumer
+    networks: [kafka-net]
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9093
+    profiles: ["case5"]
+
+  case5-dlq-handler:
+    build: ./case-5-dlq/dlq-handler
+    container_name: case5-dlq-handler
+    networks: [kafka-net]
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9093
+    profiles: ["case5"]
+
+  # ---------------------------------------------------------------------------
+  # CASE 6: Exactly-Once Semantics
+  # ---------------------------------------------------------------------------
+
+  case6-producer:
+    build: ./case-6-exactly-once/producer
+    container_name: case6-producer
+    networks: [kafka-net]
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8089:8080"
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9093
+    profiles: ["case6"]
+
+  case6-consumer:
+    build: ./case-6-exactly-once/consumer
+    container_name: case6-consumer
+    networks: [kafka-net]
+    depends_on:
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9093
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/kafka_demo
+      SPRING_DATASOURCE_USERNAME: kafka_user
+      SPRING_DATASOURCE_PASSWORD: kafka_pass
+    profiles: ["case6"]
