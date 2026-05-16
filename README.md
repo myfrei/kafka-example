@@ -6,9 +6,9 @@ runnable пример одного концепта Kafka, с типизиров
 
 ## Технологии
 
-- **Java 17** · **Spring Boot 3.3** · **Spring Kafka**
-- **Apache Kafka 7.6** (Confluent Platform)
-- **PostgreSQL 16** (Cases 2, 6)
+- **Java 21** · **Spring Boot 3.5** · **Spring Kafka**
+- **Apache Kafka** (Confluent Platform 7.9)
+- **PostgreSQL 17** (Cases 2, 6)
 - **Kafka UI** (Provectus) — визуальный мониторинг
 - **Docker Compose** — весь стек одной командой
 - **Embedded Kafka + H2** — интеграционные тесты без Docker

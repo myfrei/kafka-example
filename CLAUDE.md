@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A teaching project: six self-contained Apache Kafka scenarios ("cases") built with Java 17 + Spring Boot 3.3 + Spring Kafka. Each case is a runnable demo of one Kafka concept. The README.md (in Russian) and each `case-N-*/README.md` are the authoritative scenario guides — they document the curl commands and verification steps.
+A teaching project: six self-contained Apache Kafka scenarios ("cases") built with Java 21 + Spring Boot 3.5 + Spring Kafka. Each case is a runnable demo of one Kafka concept. The README.md (in Russian) and each `case-N-*/README.md` are the authoritative scenario guides — they document the curl commands and verification steps.
 
 ## Build & run
 
@@ -56,7 +56,7 @@ Every case lives under `case-N-<name>/` and is composed of independent Maven mod
 
 **Kafka connectivity**: brokers advertise two listeners — `localhost:9092` for host processes, `kafka:9093` for containers on the `kafka-net` network. In-container services always use `kafka:9093`.
 
-**Shared infrastructure** (`docker-compose.yml`): ZooKeeper-based Kafka 7.6 (Confluent), Kafka UI at http://localhost:8080, PostgreSQL 16 (db `kafka_demo`, user/pass `kafka_user`/`kafka_pass`). Schema is created at container init by `init-db.sql` (tables: `kafka_offsets`, `case2_processed_orders`, `processed_messages`, `orders`). PostgreSQL is used only by Case 2 and Case 6.
+**Shared infrastructure** (`docker-compose.yml`): ZooKeeper-based Kafka (Confluent Platform 7.9 — kept on the 7.x line because CP 8.x is KRaft-only and drops ZooKeeper), Kafka UI at http://localhost:8080, PostgreSQL 17 (db `kafka_demo`, user/pass `kafka_user`/`kafka_pass`). Schema is created at container init by `init-db.sql` (tables: `kafka_offsets`, `case2_processed_orders`, `processed_messages`, `orders`). PostgreSQL is used only by Case 2 and Case 6.
 
 ## The six cases
 

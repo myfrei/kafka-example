@@ -2,6 +2,7 @@ package com.kafka.demo.case5.consumer.config;
 
 import com.kafka.demo.case5.consumer.exception.PoisonMessageException;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.kafka.common.TopicPartition;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.kafka.core.KafkaTemplate;
@@ -15,7 +16,7 @@ import org.springframework.util.backoff.FixedBackOff;
  * {@link DefaultErrorHandler} + {@link DeadLetterPublishingRecoverer}:
  * - при ошибке обработки сообщение повторяется (retry)
  * - после исчерпания попыток recoverer публикует его в DLQ-топик
- * - по умолчанию DLQ-топик называется "<исходный-топик>.DLT" (та же партиция)
+ * - имя DLQ-топика задано явно ({@value #DLQ_TOPIC}) — не зависит от версии Spring Kafka
  *
  * Политика повторов:
  * - {@link PoisonMessageException} — non-retryable: сразу в DLQ (повторять бессмысленно)
@@ -25,11 +26,17 @@ import org.springframework.util.backoff.FixedBackOff;
 @Configuration
 public class DlqErrorHandlingConfig {
 
+    /** Имя DLQ-топика — задаём явно, чтобы оно не зависело от дефолта Spring Kafka. */
+    public static final String DLQ_TOPIC = "orders-dlq-demo.DLT";
+
     @Bean
     public DeadLetterPublishingRecoverer deadLetterPublishingRecoverer(
         KafkaTemplate<String, Object> kafkaTemplate
     ) {
-        return new DeadLetterPublishingRecoverer(kafkaTemplate);
+        // Явный destination resolver: всё уходит в orders-dlq-demo.DLT, та же партиция
+        return new DeadLetterPublishingRecoverer(
+            kafkaTemplate,
+            (record, exception) -> new TopicPartition(DLQ_TOPIC, record.partition()));
     }
 
     @Bean
