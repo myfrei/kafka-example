@@ -13,6 +13,18 @@ CREATE TABLE IF NOT EXISTS kafka_offsets (
     UNIQUE (topic, partition_id, consumer_group)
 );
 
+-- Case 2: Бизнес-результат обработки заказов (пишется атомарно с оффсетом)
+CREATE TABLE IF NOT EXISTS case2_processed_orders (
+    id               BIGSERIAL PRIMARY KEY,
+    order_id         VARCHAR(255)  NOT NULL UNIQUE,
+    customer_id      VARCHAR(255),
+    region           VARCHAR(64),
+    total_amount     NUMERIC(12,2),
+    source_partition INTEGER,
+    source_offset    BIGINT,
+    processed_at     TIMESTAMP     NOT NULL DEFAULT NOW()
+);
+
 -- Case 6: Идемпотентность — таблица обработанных сообщений
 CREATE TABLE IF NOT EXISTS processed_messages (
     id             BIGSERIAL PRIMARY KEY,

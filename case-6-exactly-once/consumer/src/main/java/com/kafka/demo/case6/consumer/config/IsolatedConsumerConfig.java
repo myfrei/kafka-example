@@ -1,5 +1,6 @@
 package com.kafka.demo.case6.consumer.config;
 
+import com.kafka.demo.case6.consumer.model.OrderMessage;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.common.serialization.StringDeserializer;
 import org.springframework.beans.factory.annotation.Value;
@@ -9,20 +10,17 @@ import org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;
 import org.springframework.kafka.core.ConsumerFactory;
 import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
 import org.springframework.kafka.listener.ContainerProperties;
+import org.springframework.kafka.support.serializer.JsonDeserializer;
 
 import java.util.HashMap;
 import java.util.Map;
 
 /**
- * Конфигурация консьюмера с isolation.level=read_committed.
+ * Консьюмер с isolation.level=read_committed.
  *
- * КЛЮЧЕВОЕ ОТЛИЧИЕ от стандартной конфигурации:
- * isolation.level=read_committed — консьюмер видит только сообщения
- * из ЗАКОММИЧЕННЫХ Kafka-транзакций. Сообщения из незавершённых или
- * откатившихся транзакций невидимы.
- *
- * Без этой настройки консьюмер видит ВСЕ сообщения (read_uncommitted),
- * включая те, что потом будут откатаны — дубли гарантированы.
+ * Это ключевая настройка для работы с транзакционными продюсерами:
+ * консьюмер видит ТОЛЬКО сообщения из закоммиченных Kafka-транзакций.
+ * Сообщения откатившихся транзакций невидимы — никаких дублей от откатов.
  */
 @Configuration
 public class IsolatedConsumerConfig {
@@ -31,22 +29,25 @@ public class IsolatedConsumerConfig {
     private String bootstrapServers;
 
     @Bean
-    public ConsumerFactory<String, String> isolatedConsumerFactory() {
+    public ConsumerFactory<String, OrderMessage> isolatedConsumerFactory() {
         Map<String, Object> props = new HashMap<>();
         props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers);
         props.put(ConsumerConfig.GROUP_ID_CONFIG, "exactly-once-group");
         props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
         props.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, false);
-        props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
-        props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
         // КРИТИЧЕСКИ ВАЖНО для работы с транзакционными продюсерами
         props.put(ConsumerConfig.ISOLATION_LEVEL_CONFIG, "read_committed");
-        return new DefaultKafkaConsumerFactory<>(props);
+
+        JsonDeserializer<OrderMessage> valueDeserializer = new JsonDeserializer<>(OrderMessage.class);
+        valueDeserializer.setUseTypeHeaders(false);
+        valueDeserializer.addTrustedPackages("com.kafka.demo.*");
+
+        return new DefaultKafkaConsumerFactory<>(props, new StringDeserializer(), valueDeserializer);
     }
 
     @Bean
-    public ConcurrentKafkaListenerContainerFactory<String, String> isolatedListenerContainerFactory() {
-        ConcurrentKafkaListenerContainerFactory<String, String> factory =
+    public ConcurrentKafkaListenerContainerFactory<String, OrderMessage> isolatedListenerContainerFactory() {
+        ConcurrentKafkaListenerContainerFactory<String, OrderMessage> factory =
             new ConcurrentKafkaListenerContainerFactory<>();
         factory.setConsumerFactory(isolatedConsumerFactory());
         factory.getContainerProperties().setAckMode(ContainerProperties.AckMode.MANUAL_IMMEDIATE);

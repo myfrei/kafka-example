@@ -9,15 +9,19 @@ spring:
     bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
     producer:
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
-      value-serializer: org.apache.kafka.common.serialization.StringSerializer
-      # Гарантия доставки: acks=all означает что все реплики подтвердили запись
+      # Типизированная модель сериализуется в JSON
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      # Гарантия доставки: acks=all — все реплики подтвердили запись
       acks: all
       retries: 3
       properties:
         enable.idempotence: false
+        # Не добавляем заголовки с именем Java-класса: продюсер и консьюмер —
+        # независимые модули с разными пакетами. Консьюмер знает целевой тип сам.
+        spring.json.add.type.headers: false
 
 app:
   kafka:
     topic: orders
-    # Имя инстанса продюсера (переопределяется через env PRODUCER_ID)
+  # Имя инстанса продюсера (переопределяется через env PRODUCER_ID)
   producer-id: ${PRODUCER_ID:producer-1}

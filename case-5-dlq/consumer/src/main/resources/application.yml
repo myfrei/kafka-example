@@ -1,0 +1,29 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: case5-consumer
+
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    consumer:
+      group-id: dlq-consumer-group
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      properties:
+        spring.json.use.type.headers: false
+        spring.json.value.default.type: com.kafka.demo.case5.consumer.model.OrderEvent
+        spring.json.trusted.packages: "com.kafka.demo.*"
+    # Продюсер используется DeadLetterPublishingRecoverer для отправки в DLQ
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      properties:
+        spring.json.add.type.headers: false
+
+app:
+  chaos:
+    # Доля заказов со случайным ВРЕМЕННЫМ сбоем (повторяемым)
+    failure-rate: ${APP_CHAOS_FAILURE_RATE:0.0}

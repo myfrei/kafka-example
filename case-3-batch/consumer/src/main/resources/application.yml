@@ -7,19 +7,14 @@ spring:
 
   kafka:
     bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
-    consumer:
-      group-id: batch-consumer-group
-      auto-offset-reset: earliest
-      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
-      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
-      enable-auto-commit: false   # Ручной коммит после всего батча
+    # Продюсер сводок batch-summary (consumer-фабрика настроена в BatchKafkaConfig)
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
       properties:
-        # Максимальное количество записей в одном poll() вызове
-        max.poll.records: 50
-        # Максимальное ожидание для набора батча (ms)
-        fetch.min.bytes: 1024
-        fetch.max.wait.ms: 500
+        spring.json.add.type.headers: false
 
 app:
-  batch:
-    size: 50
+  chaos:
+    # Доля батчей, падающих с ошибкой (0.0..1.0)
+    failure-rate: ${APP_CHAOS_FAILURE_RATE:0.0}

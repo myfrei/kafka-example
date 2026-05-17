@@ -16,6 +16,19 @@
 - `fetch.max.wait.ms=500` — максимальное ожидание набора батча
 - `setBatchListener(true)` — listener получает `List<ConsumerRecord>` вместо одной записи
 
+**Что в этой версии сделано реалистичнее:**
+- В батч приходит типизированный `OrderEvent` (заказ с позициями)
+- После успешного коммита батча консьюмер публикует `BatchSummary` в топик `batch-summary`
+- Добавлен **reporting-service** — downstream-потребитель, агрегирующий сводки в отчёт
+- `FailureSimulator` роняет ~15% батчей целиком — наглядная демонстрация
+  риска батч-обработки «всё или ничего»
+
+**Топология:**
+```
+Producer → [batch-topic] → Batch Consumer → [batch-summary] → reporting-service
+                            (батчи по 50)    (сводка батча)    (накопительный отчёт)
+```
+
 ---
 
 ## Запуск
@@ -26,75 +39,74 @@ docker-compose --profile case3 up -d
 docker logs -f case3-batch-consumer
 ```
 
+| Сервис | Порт |
+|---|---|
+| case3-producer | 8084 |
+| case3-reporting-service | 8090 |
+
 ---
 
 ## Сценарий проверки
 
-### Шаг 1: Загрузить батч сообщений
+### Шаг 1: Залить заказы
 
 ```bash
-# Отправить 100 сообщений подряд через producer
-for i in {1..100}; do
-  curl -s -X POST http://localhost:8084/api/messages \
-    -H "Content-Type: application/json" \
-    -d "{\"key\": \"key-$i\", \"message\": \"message #$i\"}" &
-done
-wait
-echo "All 100 messages sent"
+curl "http://localhost:8084/api/messages/flood?count=200"
 ```
 
 ### Шаг 2: Наблюдать батч-обработку в логах
 
-Ожидаемый вывод:
 ```
-=== BATCH RECEIVED: 50 messages ===
+=== BATCH RECEIVED: 50 records ===
   Partition 0: 17 records, offsets [0 - 16]
   Partition 1: 18 records, offsets [0 - 17]
   Partition 2: 15 records, offsets [0 - 14]
-After deduplication: 50 unique keys (from 50 records)
-=== BATCH COMMITTED: 50 messages processed ===
-
-=== BATCH RECEIVED: 50 messages ===
-...
-=== BATCH COMMITTED: 50 messages processed ===
+Batch processed: 50 orders, 48 distinct customers, revenue=...
+=== BATCH COMMITTED: 50 records, summary batch-xxxxxxxx published ===
 ```
 
-### Шаг 3: Проверить Consumer Lag в Kafka UI
+При сбое (chaos):
+```
+Batch processing failed (50 records). NOT committing offset — batch will be re-read ...
+```
 
-1. Открыть http://localhost:8080
-2. Consumer Groups → batch-consumer-group → Consumer Lag
-3. Наблюдать как lag уменьшается батчами по 50
-
-### Шаг 4: Сравнение скорости обработки
+### Шаг 3: Проверить статистику и отчёт
 
 ```bash
-# Посчитать throughput в логах:
-# Время на 50 сообщений = batch_size * 10ms = 500ms
-# Throughput = 50 / 0.5 = 100 msg/sec
-
-# Для сравнения: построчная обработка с отдельным коммитом = ~10ms * 50 = 500ms
-# + 50 коммитов = значительно медленнее
+# Сколько записей/батчей обработал консьюмер
+curl http://localhost:8084 >/dev/null   # producer alive
+# reporting-service — накопительный отчёт по сводкам батчей
+curl http://localhost:8090/api/report
 ```
+
+### Шаг 4: Consumer Lag в Kafka UI
+
+http://localhost:8080 → Consumer Groups → `batch-consumer-group` → Consumer Lag —
+видно, как lag уменьшается батчами по 50.
+
+---
+
+## Тесты
+
+```bash
+cd case-3-batch/consumer
+mvn test
+```
+
+`BatchConsumerIntegrationTest` поднимает Embedded Kafka, заливает 60 заказов
+и проверяет, что они прочитаны и обработаны батчами.
 
 ---
 
 ## Движение оффсета в батче
 
 ```
-poll() → [msg:p0:offset5, msg:p1:offset3, msg:p0:offset6, ...]
-           ↓
-       processBatch(records)  — обрабатываем ВСЕ сообщения
-           ↓
-       acknowledge()          — Kafka коммитит максимальный offset для каждой партиции:
-                                partition-0: offset 6
-                                partition-1: offset 3
-                                partition-2: ...
+poll() → [50 записей] → processBatch() → acknowledge() → Kafka коммитит
+                                                          max offset каждой партиции
 ```
 
-**Если упасть на середине батча:**
-- Оффсет не закоммичен
-- При следующем старте весь батч перечитается снова
-- Нужна идемпотентная обработка (дедупликация по ключу)
+**Если упасть на середине батча:** оффсет не закоммичен, весь батч перечитается —
+нужна идемпотентная обработка (дедупликация по ключу, см. `BatchProcessingService.deduplicate`).
 
 ---
 

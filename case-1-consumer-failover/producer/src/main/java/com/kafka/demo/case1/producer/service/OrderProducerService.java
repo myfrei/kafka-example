@@ -1,5 +1,6 @@
 package com.kafka.demo.case1.producer.service;
 
+import com.kafka.demo.case1.producer.model.OrderEvent;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -8,17 +9,22 @@ import org.springframework.kafka.support.SendResult;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
-import java.time.LocalDateTime;
-import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.atomic.AtomicLong;
 
+/**
+ * Публикует типизированные события {@link OrderEvent} в топик "orders".
+ *
+ * Сообщения сериализуются в JSON через JsonSerializer (см. application.yml).
+ * Ключ сообщения — orderId: события одного заказа всегда попадут в одну партицию,
+ * что сохраняет порядок их обработки.
+ */
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class OrderProducerService {
 
-    private final KafkaTemplate<String, String> kafkaTemplate;
+    private final KafkaTemplate<String, OrderEvent> kafkaTemplate;
+    private final OrderFactory orderFactory;
 
     @Value("${app.kafka.topic}")
     private String topic;
@@ -26,44 +32,35 @@ public class OrderProducerService {
     @Value("${app.producer-id}")
     private String producerId;
 
-    private final AtomicLong counter = new AtomicLong(0);
-
     /**
-     * Автоматически отправляем сообщение каждые 2 секунды.
-     * Это позволяет наблюдать непрерывный поток и следить
-     * за тем, какой консьюмер получает каждое сообщение.
+     * Каждые 2 секунды генерируем новый реалистичный заказ.
+     * Непрерывный поток позволяет наблюдать, какой консьюмер группы получает событие.
      */
     @Scheduled(fixedDelay = 2000)
-    public void sendAutoMessage() {
-        String orderId = UUID.randomUUID().toString().substring(0, 8);
-        long seq = counter.incrementAndGet();
-        String message = String.format(
-            "{\"orderId\":\"%s\", \"producer\":\"%s\", \"seq\":%d, \"time\":\"%s\"}",
-            orderId, producerId, seq, LocalDateTime.now()
-        );
-        sendMessage(orderId, message);
+    public void sendAutoOrder() {
+        publish(orderFactory.newOrder(producerId));
     }
 
     /**
-     * Ручная отправка через REST API.
-     * Ключ сообщения (orderId) определяет, в какую партицию попадёт сообщение:
-     * partition = hash(key) % numPartitions
+     * Публикация конкретного заказа (используется REST-контроллером).
      */
-    public void sendMessage(String key, String value) {
-        CompletableFuture<SendResult<String, String>> future = kafkaTemplate.send(topic, key, value);
+    public OrderEvent publish(OrderEvent order) {
+        CompletableFuture<SendResult<String, OrderEvent>> future =
+            kafkaTemplate.send(topic, order.orderId(), order);
 
         future.whenComplete((result, ex) -> {
             if (ex != null) {
-                log.error("[{}] Failed to send message key={}: {}", producerId, key, ex.getMessage());
+                log.error("[{}] Failed to send order {}: {}", producerId, order.orderId(), ex.getMessage());
             } else {
-                log.info("[{}] Sent → topic={} partition={} offset={} key={}",
+                log.info("[{}] Sent order {} → partition={} offset={} total={}",
                     producerId,
-                    result.getRecordMetadata().topic(),
+                    order.orderId(),
                     result.getRecordMetadata().partition(),
                     result.getRecordMetadata().offset(),
-                    key
+                    order.totalAmount()
                 );
             }
         });
+        return order;
     }
 }

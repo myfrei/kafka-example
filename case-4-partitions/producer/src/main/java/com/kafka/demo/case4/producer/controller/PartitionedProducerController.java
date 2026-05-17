@@ -1,22 +1,20 @@
 package com.kafka.demo.case4.producer.controller;
 
+import com.kafka.demo.case4.producer.model.ActivityEvent;
+import com.kafka.demo.case4.producer.service.ActivityFactory;
+import com.kafka.demo.case4.producer.service.ActivityProducerService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
-import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.web.bind.annotation.*;
 
-import java.util.ArrayList;
-import java.util.List;
 import java.util.Map;
 
 /**
  * Продюсер для Case 4.
  *
- * Демонстрирует как ключ сообщения влияет на выбор партиции.
- * Ключи с одинаковым hash всегда попадают в одну партицию.
- *
- * Алгоритм: partition = murmur2(key.getBytes()) % numPartitions
+ * Демонстрирует, как ключ сообщения (customerId) влияет на выбор партиции:
+ * partition = murmur2(key) % numPartitions.
  */
 @Slf4j
 @RestController
@@ -24,74 +22,38 @@ import java.util.Map;
 @RequiredArgsConstructor
 public class PartitionedProducerController {
 
-    private static final String TOPIC = "partitioned-topic";
-    private final KafkaTemplate<String, String> kafkaTemplate;
+    private final ActivityProducerService producerService;
+    private final ActivityFactory activityFactory;
 
-    /**
-     * Отправить одно сообщение с ключом.
-     * Kafka детерминированно выберет партицию на основе ключа.
-     *
-     * POST /api/messages
-     * { "key": "user-123", "value": "some data" }
-     */
+    /** POST /api/messages?customerId=customer-7 — отправить событие с ключом. */
     @PostMapping
-    public ResponseEntity<Map<String, Object>> send(@RequestBody Map<String, String> body) {
-        String key = body.get("key");
-        String value = body.getOrDefault("value", "{}");
-
-        var future = kafkaTemplate.send(TOPIC, key, value);
-        future.whenComplete((result, ex) -> {
-            if (ex == null) {
-                log.info("Sent key={} → partition={} offset={}",
-                    key,
-                    result.getRecordMetadata().partition(),
-                    result.getRecordMetadata().offset()
-                );
-            }
-        });
-
-        return ResponseEntity.ok(Map.of("key", key, "status", "sent"));
+    public ResponseEntity<Map<String, Object>> send(@RequestParam String customerId) {
+        ActivityEvent event = activityFactory.newActivity(customerId);
+        producerService.publish(event);
+        return ResponseEntity.ok(Map.of("customerId", customerId, "status", "sent"));
     }
 
-    /**
-     * Отправить N сообщений с разными ключами для наблюдения распределения по партициям.
-     *
-     * GET /api/messages/flood?count=30
-     */
+    /** GET /api/messages/flood?count=30 — N событий случайных покупателей. */
     @GetMapping("/flood")
-    public ResponseEntity<Map<String, Object>> flood(
-        @RequestParam(defaultValue = "30") int count
-    ) {
-        List<String> keys = new ArrayList<>();
+    public ResponseEntity<Map<String, Object>> flood(@RequestParam(defaultValue = "30") int count) {
         for (int i = 0; i < count; i++) {
-            String key = "user-" + i;
-            String value = String.format("{\"userId\": %d, \"action\": \"login\"}", i);
-            kafkaTemplate.send(TOPIC, key, value);
-            keys.add(key);
+            producerService.publish(activityFactory.newActivityForRandomCustomer());
         }
-        log.info("Flooded topic with {} messages", count);
         return ResponseEntity.ok(Map.of(
             "sent", count,
-            "note", "Check Kafka UI → partitioned-topic → Partitions to see distribution"
+            "note", "Check Kafka UI → partitioned-topic → Partitions for distribution"
         ));
     }
 
-    /**
-     * Отправить сообщения с явным указанием партиции (bypass key-routing).
-     *
-     * POST /api/messages/partition/1
-     * { "key": "any", "value": "forced to partition 1" }
-     */
+    /** POST /api/messages/partition/2?customerId=any — отправить в конкретную партицию. */
     @PostMapping("/partition/{partition}")
     public ResponseEntity<Map<String, Object>> sendToPartition(
         @PathVariable int partition,
-        @RequestBody Map<String, String> body
+        @RequestParam String customerId
     ) {
-        String key = body.get("key");
-        String value = body.getOrDefault("value", "{}");
-        kafkaTemplate.send(TOPIC, partition, key, value);
+        producerService.publishToPartition(partition, activityFactory.newActivity(customerId));
         return ResponseEntity.ok(Map.of(
-            "key", key,
+            "customerId", customerId,
             "forcedPartition", partition,
             "status", "sent"
         ));

@@ -9,22 +9,17 @@ spring:
     url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/kafka_demo}
     username: ${SPRING_DATASOURCE_USERNAME:kafka_user}
     password: ${SPRING_DATASOURCE_PASSWORD:kafka_pass}
-    driver-class-name: org.postgresql.Driver
+    driver-class-name: ${SPRING_DATASOURCE_DRIVER:org.postgresql.Driver}
 
   jpa:
     hibernate:
-      ddl-auto: validate   # Схема создаётся через init-db.sql
-    show-sql: true
+      ddl-auto: ${JPA_DDL_AUTO:validate}   # Схема создаётся через init-db.sql
+    show-sql: false
 
   kafka:
     bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
-    consumer:
-      group-id: manual-offset-group
-      auto-offset-reset: earliest
-      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
-      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
-      # КЛЮЧЕВОЕ: отключаем автоматический коммит оффсета
-      enable-auto-commit: false
-      # assign.from.db=true означает, что мы сами управляем назначением оффсетов
-      properties:
-        isolation.level: read_committed
+
+app:
+  chaos:
+    # Доля сообщений, на которых имитируется сбой обработки (0.0..1.0)
+    failure-rate: ${APP_CHAOS_FAILURE_RATE:0.0}

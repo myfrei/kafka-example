@@ -7,7 +7,7 @@
 **Зачем это нужно?**
 - Стандартные оффсеты хранятся в `__consumer_offsets` (внутренний Kafka-топик)
 - Иногда нужна **атомарность**: сохранить бизнес-данные + оффсет в одной транзакции БД
-- Нужна возможность **replay**: перечитать сообщения с произвольного места без kafka-consumer-groups.sh
+- Нужна возможность **replay**: перечитать сообщения с произвольного места
 - Нужно хранить **аудит**: кто, когда, с каким результатом обработал сообщение
 
 **Ключевые настройки:**
@@ -15,119 +15,96 @@
 - `AckMode.MANUAL_IMMEDIATE` — оффсет коммитится только при вызове `acknowledge()`
 - `ConsumerSeekAware` — при старте читаем оффсет из БД и сдвигаем Kafka-курсор
 
+**Что в этой версии сделано реалистичнее:**
+- В топик публикуется типизированный `OrderEvent` (заказ с позициями)
+- Бизнес-данные (`case2_processed_orders`) и оффсет (`kafka_offsets`) пишутся
+  в **одной транзакции** через `ManualOffsetService` — это и есть смысл кейса
+- `FailureSimulator` роняет ~25% заказов: при сбое в БД не пишется ничего,
+  оффсет не двигается — после рестарта сообщение перечитывается (at-least-once)
+- Добавлен **audit-service** — отдельная consumer group, журнал аудита всех заказов
+
+**Топология:**
+```
+Producer → [manual-offset-topic] ─┬─→ manual-offset-group → Consumer → PostgreSQL (order + offset, атомарно)
+                                  └─→ case2-audit-group   → audit-service (журнал всех заказов)
+```
+
 ---
 
 ## Запуск
 
 ```bash
-# 1. Инфраструктура
 docker-compose up -d zookeeper kafka kafka-ui postgres
-
-# 2. Запустить кейс 2
 docker-compose --profile case2 up -d
-
-# 3. Смотреть логи
 docker logs -f case2-consumer
 ```
+
+| Сервис | Порт |
+|---|---|
+| case2-producer | 8083 |
+| case2-audit-service | 8087 |
 
 ---
 
 ## Сценарий проверки
 
-### Шаг 1: Отправить сообщения
+### Шаг 1: Отправить заказы
 
 ```bash
-curl -X POST http://localhost:8083/api/orders \
-  -H "Content-Type: application/json" \
-  -d '{"key": "k1", "message": "first message"}'
-
-curl -X POST http://localhost:8083/api/orders \
-  -H "Content-Type: application/json" \
-  -d '{"key": "k2", "message": "second message"}'
-
-curl -X POST http://localhost:8083/api/orders \
-  -H "Content-Type: application/json" \
-  -d '{"key": "k3", "message": "third message"}'
+curl -X POST "http://localhost:8083/api/orders/random?count=10"
 ```
 
-### Шаг 2: Проверить сохранённые оффсеты в PostgreSQL
+### Шаг 2: Проверить обработанные заказы и оффсеты
 
 ```bash
-# Через REST API
-curl http://localhost:8083/api/offsets
-
-# Напрямую в БД
+curl http://localhost:8083 >/dev/null   # producer
+# Оффсеты и обработанные заказы — через REST API консьюмера недоступны снаружи
+# напрямую, смотрим в PostgreSQL:
 docker exec -it postgres psql -U kafka_user -d kafka_demo \
   -c "SELECT * FROM kafka_offsets;"
-```
+docker exec -it postgres psql -U kafka_user -d kafka_demo \
+  -c "SELECT order_id, region, total_amount, source_partition, source_offset FROM case2_processed_orders;"
 
-Ожидаемый вывод:
-```
- topic               | partition_id | offset_value | consumer_group       | updated_at
----------------------+--------------+--------------+----------------------+--------------------
- manual-offset-topic |            0 |            2 | manual-offset-group  | 2024-01-01 10:00:00
+# Журнал аудита
+curl http://localhost:8087/api/audit
 ```
 
 ### Шаг 3: Ручной сдвиг оффсета (Replay)
 
-Хотим перечитать все сообщения с самого начала:
-
 ```bash
-# Устанавливаем оффсет -1 (перед первым сообщением)
+# Сдвинуть оффсет партиции 0 на 0 → после рестарта читать с offset=1
 curl -X POST http://localhost:8083/api/offsets/seek \
   -H "Content-Type: application/json" \
-  -d '{"partition": 0, "offset": -1}'
+  -d '{"partition": 0, "offset": 0}'
 
-# Перезапускаем консьюмер
 docker restart case2-consumer
 ```
-
-Наблюдаем: консьюмер перечитает все сообщения с начала.
-
-### Шаг 4: Симулировать ошибку обработки
-
-В `ManualOffsetConsumer.processMessage()` добавить временно:
-```java
-throw new RuntimeException("Simulated failure");
-```
-
-Отправить сообщение → наблюдать: оффсет НЕ сохраняется в БД, сообщение перечитывается снова.
-
----
-
-## Схема взаимодействия
-
-```
-Producer → [manual-offset-topic] → Consumer
-                                       ↓
-                                   processMessage()
-                                       ↓
-                                   saveOffset() ─── PostgreSQL
-                                       ↓
-                                   acknowledge() → Kafka (__consumer_offsets)
-
-При следующем старте:
-Consumer starts → onPartitionsAssigned() → read offset from PostgreSQL → seek()
-```
-
----
-
-## Таблица оффсетов в PostgreSQL
-
+Либо напрямую в БД:
 ```sql
--- Посмотреть все оффсеты
-SELECT * FROM kafka_offsets ORDER BY partition_id;
-
--- Сдвинуть оффсет вручную (replay последних 10 сообщений партиции 0)
-UPDATE kafka_offsets
-SET offset_value = offset_value - 10, updated_at = NOW()
-WHERE topic = 'manual-offset-topic' AND partition_id = 0 AND consumer_group = 'manual-offset-group';
-
--- Сбросить на начало
-UPDATE kafka_offsets SET offset_value = -1 WHERE topic = 'manual-offset-topic';
+UPDATE kafka_offsets SET offset_value = 0
+WHERE topic = 'manual-offset-topic' AND partition_id = 0;
 ```
 
-После изменений в БД — перезапустить `case2-consumer`.
+### Шаг 4: Наблюдать сбои обработки
+
+`APP_CHAOS_FAILURE_RATE=0.25` — четверть заказов падает. В логах:
+```
+Processing failed for order ord-... — DB offset NOT advanced, message will be re-read on restart/seek
+```
+После `docker restart case2-consumer` упавшие сообщения перечитываются: `onPartitionsAssigned`
+сдвигает курсор на сохранённый в БД оффсет.
+
+---
+
+## Тесты
+
+```bash
+cd case-2-manual-offset/consumer
+mvn test
+```
+
+`ManualOffsetConsumerIntegrationTest` поднимает Embedded Kafka + H2 (вместо PostgreSQL,
+без Docker) и проверяет атомарную запись заказа и оффсета.
 
 ---
 
@@ -138,5 +115,5 @@ UPDATE kafka_offsets SET offset_value = -1 WHERE topic = 'manual-offset-topic';
 | `AUTO` | Коммит по расписанию (auto-commit-interval) |
 | `BATCH` | Коммит после обработки целого batch poll() |
 | `MANUAL` | `acknowledge()` при следующем poll() |
-| `MANUAL_IMMEDIATE` | `acknowledge()` сразу (используем в этом кейсе) |
+| `MANUAL_IMMEDIATE` | `acknowledge()` сразу (используется в этом кейсе) |
 | `RECORD` | После каждого сообщения (автоматически) |

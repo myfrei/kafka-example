@@ -12,8 +12,13 @@ spring:
       group-id: partition-group
       auto-offset-reset: earliest
       key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
-      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
-      enable-auto-commit: true
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      properties:
+        spring.json.use.type.headers: false
+        spring.json.value.default.type: com.kafka.demo.case4.service.model.ActivityEvent
+        spring.json.trusted.packages: "com.kafka.demo.*"
 
 app:
   instance-id: ${INSTANCE_ID:instance-1}
+  chaos:
+    failure-rate: ${APP_CHAOS_FAILURE_RATE:0.0}
